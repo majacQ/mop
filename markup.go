@@ -1,13 +1,14 @@
-// Copyright (c) 2013-2019 by Michael Dvorkin and contributors. All Rights Reserved.
+// Copyright (c) 2013-2024 by Michael Dvorkin and contributors. All Rights Reserved.
 // Use of this source code is governed by a MIT-style license that can
 // be found in the LICENSE file.
 
 package mop
 
 import (
-	`github.com/nsf/termbox-go`
-	`regexp`
-	`strings`
+	"regexp"
+	"strings"
+
+	"github.com/nsf/termbox-go"
 )
 
 // Markup implements some minimalistic text formatting conventions that
@@ -26,6 +27,7 @@ import (
 type Markup struct {
 	Foreground   termbox.Attribute            // Foreground color.
 	Background   termbox.Attribute            // Background color (so far always termbox.ColorDefault).
+        RowShading   termbox.Attribute            // Background color for Row Shading.
 	RightAligned bool                         // True when the string is right aligned.
 	tags         map[string]termbox.Attribute // Tags to Termbox translation hash.
 	regex        *regexp.Regexp               // Regex to identify the supported tag names.
@@ -33,11 +35,8 @@ type Markup struct {
 
 // Creates markup to define tag to Termbox translation rules and store default
 // colors and column alignments.
-func NewMarkup() *Markup {
+func NewMarkup(profile *Profile) *Markup {
 	markup := &Markup{}
-	markup.Foreground = termbox.ColorDefault
-	markup.Background = termbox.ColorDefault
-	markup.RightAligned = false
 
 	markup.tags = make(map[string]termbox.Attribute)
 	markup.tags[`/`] = termbox.ColorDefault
@@ -49,10 +48,35 @@ func NewMarkup() *Markup {
 	markup.tags[`magenta`] = termbox.ColorMagenta
 	markup.tags[`cyan`] = termbox.ColorCyan
 	markup.tags[`white`] = termbox.ColorWhite
+	markup.tags[`darkgray`] = termbox.ColorDarkGray
+	markup.tags[`lightred`] = termbox.ColorLightRed
+	markup.tags[`lightgreen`] = termbox.ColorLightGreen
+	markup.tags[`lightyellow`] = termbox.ColorLightYellow
+	markup.tags[`lightblue`] = termbox.ColorLightBlue
+	markup.tags[`lightmagenta`] = termbox.ColorLightMagenta
+	markup.tags[`lightcyan`] = termbox.ColorLightCyan
+	markup.tags[`lightgray`] = termbox.ColorLightGray
+
 	markup.tags[`right`] = termbox.ColorDefault // Termbox can combine attributes and a single color using bitwise OR.
 	markup.tags[`b`] = termbox.AttrBold         // Attribute = 1 << (iota + 4)
 	markup.tags[`u`] = termbox.AttrUnderline
 	markup.tags[`r`] = termbox.AttrReverse
+
+	// Semantic markups
+	markup.tags[`gain`] = markup.tags[profile.Colors.Gain]
+	markup.tags[`loss`] = markup.tags[profile.Colors.Loss]
+	markup.tags[`tag`] = markup.tags[profile.Colors.Tag]
+	markup.tags[`header`] = markup.tags[profile.Colors.Header]
+	markup.tags[`time`] = markup.tags[profile.Colors.Time]
+	markup.tags[`default`] = markup.tags[profile.Colors.Default]
+
+	markup.Foreground = markup.tags[profile.Colors.Default]
+
+	markup.Background = termbox.ColorDefault
+	markup.RightAligned = false
+
+        markup.RowShading = markup.tags[profile.Colors.RowShading]
+
 	markup.regex = markup.supportedTags() // Once we have the hash we could build the regex.
 
 	return markup
@@ -77,7 +101,7 @@ func (markup *Markup) Tokenize(str string) []string {
 		tail = match[0]
 		if match[1] != 0 {
 			if head != 0 || tail != 0 {
-				// Apend the text between tags.
+				// Append the text between tags.
 				strings = append(strings, str[head:tail])
 			}
 			// Append the tag itmarkup.
@@ -123,7 +147,7 @@ func (markup *Markup) process(tag string, open bool) bool {
 				if attribute >= termbox.AttrBold {
 					markup.Foreground &= ^attribute // Clear the Termbox attribute.
 				} else {
-					markup.Foreground = termbox.ColorDefault
+					markup.Foreground = markup.tags[`default`]
 				}
 			}
 		}

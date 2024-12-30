@@ -1,4 +1,4 @@
-// Copyright (c) 2013-2019 by Michael Dvorkin and contributors. All Rights Reserved.
+// Copyright (c) 2013-2024 by Michael Dvorkin and contributors. All Rights Reserved.
 // Use of this source code is governed by a MIT-style license that can
 // be found in the LICENSE file.
 
@@ -9,14 +9,18 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
+	"unicode"
 )
 
 var currencies = map[string]string{
 	"RUB": "₽",
-	"GDB": "£",
+	"GBP": "£",
+	"GBp": "p",
+	"SEK": "kr",
 	"EUR": "€",
 	"JPY": "¥",
 }
@@ -54,16 +58,16 @@ func NewLayout() *Layout {
 		{10, `High`, `High`, currency},
 		{10, `Low52`, `52w Low`, currency},
 		{10, `High52`, `52w High`, currency},
-		{11, `Volume`, `Volume`, nil},
-		{11, `AvgVolume`, `AvgVolume`, nil},
+		{11, `Volume`, `Volume`, integer},
+		{11, `AvgVolume`, `AvgVolume`, integer},
 		{9, `PeRatio`, `P/E`, blank},
 		{9, `Dividend`, `Dividend`, zero},
 		{9, `Yield`, `Yield`, percent},
 		{11, `MarketCap`, `MktCap`, currency},
-		{13, `PreOpen`, `PreMktChg%`, last},
-		{13, `AfterHours`, `AfterMktChg%`, last},
+		{13, `PreOpen`, `PreMktChg%`, percent},
+		{13, `AfterHours`, `AfterMktChg%`, percent},
 	}
-	layout.regex = regexp.MustCompile(`(\.\d+)[BMK]?$`)
+	layout.regex = regexp.MustCompile(`(\.\d+)[TBMK]?$`)
 	layout.marketTemplate = buildMarketTemplate()
 	layout.quotesTemplate = buildQuotesTemplate()
 
@@ -79,7 +83,7 @@ func (layout *Layout) Market(market *Market) string {
 
 	highlight(market.Dow, market.Sp500, market.Nasdaq,
 		market.Tokyo, market.HongKong, market.London, market.Frankfurt,
-		market.Yield, market.Oil, market.Euro, market.Gold)
+		market.Yield, market.Oil, market.Euro, market.Yen, market.Gold)
 	buffer := new(bytes.Buffer)
 	layout.marketTemplate.Execute(buffer, market)
 
@@ -136,14 +140,28 @@ func (layout *Layout) TotalColumns() int {
 	return len(layout.columns)
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func (layout *Layout) prettify(quotes *Quotes) []Stock {
 	pretty := make([]Stock, len(quotes.stocks))
+
+	//
+	// Iterate over the list of stocks to get the longest ticker name (some tickers will exceed the allotted 10 char length for the Ticker column)
+	// Save the longest ticker length and use max(longestlength, column.width) later in the second loop to keep the ticker indentations consistent
+	//
+	tickerWidth := 0
+	for _, stock := range quotes.stocks {
+		value := reflect.ValueOf(&stock).Elem().FieldByName(`Ticker`).String()
+		currentLength := len(value)
+		if currentLength > tickerWidth {
+			tickerWidth = currentLength
+		}
+	}
+
 	//
 	// Iterate over the list of stocks and properly format all its columns.
 	//
 	for i, stock := range quotes.stocks {
-		pretty[i].Advancing = stock.Advancing
+		pretty[i].Direction = stock.Direction
 		//
 		// Iterate over the list of stock columns. For each column name:
 		// - Get current column value.
@@ -158,17 +176,22 @@ func (layout *Layout) prettify(quotes *Quotes) []Stock {
 				value = column.formatter(value, stock.Currency)
 			}
 			// ex. pretty[i].Change = layout.pad(value, 10)
+			if column.name == `Ticker` && (0-tickerWidth) < column.width {
+				column.width = (0 - tickerWidth)
+			}
 			reflect.ValueOf(&pretty[i]).Elem().FieldByName(column.name).SetString(layout.pad(value, column.width))
 		}
 	}
 
 	profile := quotes.profile
 
-	if profile.filterExpression != nil {
-		if layout.filter == nil { // Initialize filter on first invocation.
-			layout.filter = NewFilter(profile)
+	if profile.Filter != "" { // Fix for blank display if invalid filter expression was cleared.
+		if profile.filterExpression != nil {
+			if layout.filter == nil { // Initialize filter on first invocation.
+				layout.filter = NewFilter(profile)
+			}
+			pretty = layout.filter.Apply(pretty)
 		}
-		pretty = layout.filter.Apply(pretty)
 	}
 
 	if layout.sorter == nil { // Initialize sorter on first invocation.
@@ -186,7 +209,7 @@ func (layout *Layout) prettify(quotes *Quotes) []Stock {
 	return pretty
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func (layout *Layout) pad(str string, width int) string {
 	match := layout.regex.FindStringSubmatch(str)
 	if len(match) > 0 {
@@ -201,50 +224,59 @@ func (layout *Layout) pad(str string, width int) string {
 	return fmt.Sprintf(`%*s`, width, str)
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func buildMarketTemplate() *template.Template {
-	markup := `<yellow>Dow</> {{.Dow.change}} ({{.Dow.percent}}) at {{.Dow.latest}} <yellow>S&P 500</> {{.Sp500.change}} ({{.Sp500.percent}}) at {{.Sp500.latest}} <yellow>NASDAQ</> {{.Nasdaq.change}} ({{.Nasdaq.percent}}) at {{.Nasdaq.latest}}
-<yellow>Tokyo</> {{.Tokyo.change}} ({{.Tokyo.percent}}) at {{.Tokyo.latest}} <yellow>HK</> {{.HongKong.change}} ({{.HongKong.percent}}) at {{.HongKong.latest}} <yellow>London</> {{.London.change}} ({{.London.percent}}) at {{.London.latest}} <yellow>Frankfurt</> {{.Frankfurt.change}} ({{.Frankfurt.percent}}) at {{.Frankfurt.latest}} {{if .IsClosed}}<right>U.S. markets closed</right>{{end}}
-<yellow>10-Year Yield</> {{.Yield.latest}}% ({{.Yield.change}}) <yellow>Euro</> ${{.Euro.latest}} ({{.Euro.change}}%) <yellow>Yen</> ¥{{.Yen.latest}} ({{.Yen.change}}%) <yellow>Oil</> ${{.Oil.latest}} ({{.Oil.change}}%) <yellow>Gold</> ${{.Gold.latest}} ({{.Gold.change}}%)`
+	markup := `<tag>Dow</> {{.Dow.change}} ({{.Dow.percent}}) at {{.Dow.latest}} <tag>S&P 500</> {{.Sp500.change}} ({{.Sp500.percent}}) at {{.Sp500.latest}} <tag>NASDAQ</> {{.Nasdaq.change}} ({{.Nasdaq.percent}}) at {{.Nasdaq.latest}}
+<tag>Tokyo</> {{.Tokyo.change}} ({{.Tokyo.percent}}) at {{.Tokyo.latest}} <tag>HK</> {{.HongKong.change}} ({{.HongKong.percent}}) at {{.HongKong.latest}} <tag>London</> {{.London.change}} ({{.London.percent}}) at {{.London.latest}} <tag>Frankfurt</> {{.Frankfurt.change}} ({{.Frankfurt.percent}}) at {{.Frankfurt.latest}} {{if .IsClosed}}<right>U.S. markets closed</right>{{end}}
+<tag>10-Year Yield</> {{.Yield.latest}} ({{.Yield.change}}) <tag>Euro</> ${{.Euro.latest}} ({{.Euro.change}}) <tag>Yen</> ¥{{.Yen.latest}} ({{.Yen.change}}) <tag>Oil</> ${{.Oil.latest}} ({{.Oil.change}}) <tag>Gold</> ${{.Gold.latest}} ({{.Gold.change}})`
 
 	return template.Must(template.New(`market`).Parse(markup))
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func buildQuotesTemplate() *template.Template {
-	markup := `<right><white>{{.Now}}</></right>
+	markup := `<right><time>{{.Now}}</></right>
 
 
 
-{{.Header}}
-{{range.Stocks}}{{if .Advancing}}<green>{{end}}{{.Ticker}}{{.LastTrade}}{{.Change}}{{.ChangePct}}{{.Open}}{{.Low}}{{.High}}{{.Low52}}{{.High52}}{{.Volume}}{{.AvgVolume}}{{.PeRatio}}{{.Dividend}}{{.Yield}}{{.MarketCap}}{{.PreOpen}}{{.AfterHours}}</>
+<header>{{.Header}}</>
+{{range.Stocks}}{{if eq .Direction 1}}<gain>{{else if eq .Direction -1}}<loss>{{end}}{{.Ticker}}{{.LastTrade}}{{.Change}}{{.ChangePct}}{{.Open}}{{.Low}}{{.High}}{{.Low52}}{{.High52}}{{.Volume}}{{.AvgVolume}}{{.PeRatio}}{{.Dividend}}{{.Yield}}{{.MarketCap}}{{.PreOpen}}{{.AfterHours}}</>
 {{end}}`
 
 	return template.Must(template.New(`quotes`).Parse(markup))
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func highlight(collections ...map[string]string) {
 	for _, collection := range collections {
-		if collection[`change`][0:1] != `-` {
-			collection[`change`] = `<green>` + collection[`change`] + `</>`
+		change := collection[`change`]
+		if change[len(change)-1:] == `%` {
+			change = change[0 : len(change)-1]
+		}
+		adv, err := strconv.ParseFloat(change, 64)
+		if err == nil {
+			if adv < 0.0 {
+				collection[`change`] = `<loss>` + collection[`change`] + `</>`
+			} else if adv > 0.0 {
+				collection[`change`] = `<gain>` + collection[`change`] + `</>`
+			}
 		}
 	}
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func group(stocks []Stock) []Stock {
 	grouped := make([]Stock, len(stocks))
 	current := 0
 
 	for _, stock := range stocks {
-		if stock.Advancing {
+		if stock.Direction >= 0 {
 			grouped[current] = stock
 			current++
 		}
 	}
 	for _, stock := range stocks {
-		if !stock.Advancing {
+		if stock.Direction < 0 {
 			grouped[current] = stock
 			current++
 		}
@@ -253,30 +285,30 @@ func group(stocks []Stock) []Stock {
 	return grouped
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func arrowFor(column int, profile *Profile) string {
 	if column == profile.SortColumn {
 		if profile.Ascending {
-			return string('\U00002191')
+			return string('▲')
 		}
-		return string('\U00002193')
+		return string('▼')
 	}
 	return ``
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func blank(str ...string) string {
 	if len(str) < 1 {
 		return "ERR"
 	}
-	if len(str[0]) == 3 && str[0][0:3] == `N/A` {
+	if (len(str[0]) == 3 && str[0][0:3] == `N/A`) || len(str[0]) == 0 {
 		return `-`
 	}
 
 	return str[0]
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func zero(str ...string) string {
 	if len(str) < 2 {
 		return "ERR"
@@ -288,7 +320,7 @@ func zero(str ...string) string {
 	return currency(str[0], str[1])
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func last(str ...string) string {
 	if len(str) < 1 {
 		return "ERR"
@@ -300,7 +332,7 @@ func last(str ...string) string {
 	return percent(str[0])
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func currency(str ...string) string {
 	if len(str) < 2 {
 		return "ERR"
@@ -322,7 +354,7 @@ func currency(str ...string) string {
 }
 
 // Returns percent value truncated at 2 decimal points.
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func percent(str ...string) string {
 	if len(str) < 1 {
 		return "ERR"
@@ -341,6 +373,26 @@ func percent(str ...string) string {
 	}
 	if str[0][len(str)-1] != '%' {
 		str[0] += `%`
+	}
+	return str[0]
+}
+
+// Returns value as integer (no trailing digits after a '.').
+// -----------------------------------------------------------------------------
+func integer(str ...string) string {
+	if len(str) < 1 {
+		return "ERR"
+	}
+	if str[0] == `N/A` || len(str[0]) == 0 {
+		return `-`
+	}
+
+	// Don't strip after the '.' if we have a value such as 123.45M
+	if unicode.IsDigit(rune(str[0][len(str[0])-1])) {
+		split := strings.Split(str[0], ".")
+		if len(split) == 2 {
+			return split[0]
+		}
 	}
 	return str[0]
 }

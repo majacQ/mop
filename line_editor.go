@@ -1,14 +1,14 @@
-// Copyright (c) 2013-2019 by Michael Dvorkin and contributors. All Rights Reserved.
+// Copyright (c) 2013-2024 by Michael Dvorkin and contributors. All Rights Reserved.
 // Use of this source code is governed by a MIT-style license that can
 // be found in the LICENSE file.
 
 package mop
 
 import (
-	`regexp`
-	`strings`
+	"regexp"
+	"strings"
 
-	`github.com/nsf/termbox-go`
+	"github.com/nsf/termbox-go"
 )
 
 // LineEditor kicks in when user presses '+' or '-' to add or delete stock
@@ -189,7 +189,7 @@ func (editor *LineEditor) execute() *LineEditor {
 
 				// Clear the lines at the bottom of the list, if any.
 				after := before - removed
-				for i := before; i > after; i-- {
+				for i := before + 1; i > after; i-- {
 					editor.screen.ClearLine(0, i+4)
 				}
 			}

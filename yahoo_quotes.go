@@ -1,4 +1,4 @@
-// Copyright (c) 2013-2019 by Michael Dvorkin and contributors. All Rights Reserved.
+// Copyright (c) 2013-2023 by Michael Dvorkin and contributors. All Rights Reserved.
 // Use of this source code is governed by a MIT-style license that can
 // be found in the LICENSE file.
 
@@ -15,14 +15,15 @@ import (
 	"strings"
 )
 
-// const quotesURL = `http://download.finance.yahoo.com/d/quotes.csv?s=%s&f=sl1c1p2oghjkva2r2rdyj3j1`
-const quotesURLv7 = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=%s`
-const quotesURLv7QueryParts = `&range=1d&interval=5m&indicators=close&includeTimestamps=false&includePrePost=false&corsDomain=finance.yahoo.com&.tsrc=finance`
+const quotesURL = `https://query1.finance.yahoo.com/v7/finance/quote?crumb=%s&symbols=%s`
+
+// const quotesURLv7QueryParts = `&range=1d&interval=5m&indicators=close&includeTimestamps=false&includePrePost=false&corsDomain=finance.yahoo.com&.tsrc=finance`
+const quotesURLQueryParts = `&range=1d&interval=5m&indicators=close&includeTimestamps=false&includePrePost=false&corsDomain=finance.yahoo.com&.tsrc=finance`
 
 const noDataIndicator = `N/A`
 
 // Stock stores quote information for the particular stock ticker. The data
-// for all the fields except 'Advancing' is fetched using Yahoo market API.
+// for all the fields except 'Direction' is fetched using Yahoo market API.
 type Stock struct {
 	Ticker     string `json:"symbol"`                      // Stock ticker.
 	LastTrade  string `json:"regularMarketPrice"`          // l1: last trade.
@@ -42,7 +43,7 @@ type Stock struct {
 	MarketCap  string `json:"marketCap"`                   // j3: market cap real time.
 	MarketCapX string `json:"marketCap"`                   // j1: market cap (fallback when real time is N/A).
 	Currency   string `json:"currency"`                    // String code for currency of stock.
-	Advancing  bool   // True when change is >= $0.
+	Direction  int    // -1 when change is < $0, 0 when change is = $0, 1 when change is > $0.
 	PreOpen    string `json:"preMarketChangePercent,omitempty"`
 	AfterHours string `json:"postMarketChangePercent,omitempty"`
 }
@@ -78,8 +79,32 @@ func (quotes *Quotes) Fetch() (self *Quotes) {
 			}
 		}()
 
-		url := fmt.Sprintf(quotesURLv7, strings.Join(quotes.profile.Tickers, `,`))
-		response, err := http.Get(url + quotesURLv7QueryParts)
+		url := fmt.Sprintf(quotesURL, quotes.market.crumb, strings.Join(quotes.profile.Tickers, `,`))
+
+		client := http.Client{}
+		request, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			panic(err)
+		}
+
+		request.Header = http.Header{
+			"Accept":          {"*/*"},
+			"Accept-Language": {"en-US,en;q=0.5"},
+			"Connection":      {"keep-alive"},
+			"Content-Type":    {"application/json"},
+			"Cookie":          {quotes.market.cookies},
+			"Host":            {"query1.finance.yahoo.com"},
+			"Origin":          {"https://finance.yahoo.com"},
+			"Referer":         {"https://finance.yahoo.com"},
+			"Sec-Fetch-Dest":  {"empty"},
+			"Sec-Fetch-Mode":  {"cors"},
+			"Sec-Fetch-Site":  {"same-site"},
+			"TE":              {"trailers"},
+			"User-Agent":      {userAgent},
+		}
+
+		response, err := client.Do(request)
+		// response, err := http.Get(url + quotesURLQueryParts)
 		if err != nil {
 			panic(err)
 		}
@@ -96,7 +121,7 @@ func (quotes *Quotes) Fetch() (self *Quotes) {
 	return quotes
 }
 
-// Ok returns two values: 1) boolean indicating whether the error has occured,
+// Ok returns two values: 1) boolean indicating whether the error has occurred,
 // and 2) the error text itself.
 func (quotes *Quotes) Ok() (bool, string) {
 	return quotes.errors == ``, quotes.errors
@@ -188,8 +213,13 @@ func (quotes *Quotes) parse2(body []byte) (*Quotes, error) {
 			fmt.Println("-------------------")
 		*/
 		adv, err := strconv.ParseFloat(quotes.stocks[i].Change, 64)
+		quotes.stocks[i].Direction = 0
 		if err == nil {
-			quotes.stocks[i].Advancing = adv >= 0.0
+			if adv < 0.0 {
+				quotes.stocks[i].Direction = -1
+			} else if adv > 0.0 {
+				quotes.stocks[i].Direction = 1
+			}
 		}
 	}
 	return quotes, nil
@@ -202,7 +232,7 @@ func (quotes *Quotes) parse(body []byte) *Quotes {
 	quotes.stocks = make([]Stock, len(lines))
 	//
 	// Get the total number of fields in the Stock struct. Skip the last
-	// Advanicing field which is not fetched.
+	// Advancing field which is not fetched.
 	//
 	fieldsCount := reflect.ValueOf(quotes.stocks[0]).NumField() - 1
 	//
@@ -226,16 +256,23 @@ func (quotes *Quotes) parse(body []byte) *Quotes {
 			quotes.stocks[i].MarketCap = quotes.stocks[i].MarketCapX
 		}
 		//
-		// Stock is advancing if the change is not negative (i.e. $0.00
-		// is also "advancing").
+		// Get the direction of the stock
 		//
-		quotes.stocks[i].Advancing = (quotes.stocks[i].Change[0:1] != `-`)
+		adv, err := strconv.ParseFloat(quotes.stocks[i].Change, 64)
+		quotes.stocks[i].Direction = 0
+		if err == nil {
+			if adv < 0 {
+				quotes.stocks[i].Direction = -1
+			} else if adv > 0 {
+				quotes.stocks[i].Direction = 1
+			}
+		}
 	}
 
 	return quotes
 }
 
-//-----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 func sanitize(body []byte) []byte {
 	return bytes.Replace(bytes.TrimSpace(body), []byte{'"'}, []byte{}, -1)
 }
